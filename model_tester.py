@@ -143,8 +143,6 @@ async def test_single_model(session, config: dict, model_name: str, header_fn) -
     if _needs_claude_code(model_name):
         target_url += "?beta=true"
     headers = _test_headers(model_name)
-    if config.get("api_key"):
-        headers["x-api-key"] = config["api_key"]
 
     body = {
         "model": model_name,

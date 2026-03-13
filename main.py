@@ -1,5 +1,4 @@
 import json
-import hmac
 import hashlib
 import sys
 import os
@@ -32,7 +31,6 @@ def resolve_config_path():
 CONFIG_FILE = resolve_config_path()
 
 DEFAULT_CONFIG = {
-    "api_key": "",
     "proxy_url": "http://127.0.0.1:2080",
     "use_proxy": True,
     "debug": False,
@@ -41,7 +39,6 @@ DEFAULT_CONFIG = {
     "port": 8765,
     "dashboard_password": "",
     "dashboard_secret": "",
-    "api_auth_key": ""
 }
 
 config = {}
@@ -127,13 +124,6 @@ def setup_wizard():
     print("AnyRouter Proxy Setup Wizard")
     print("="*60)
     print("Please configure your proxy settings.\n")
-    current_key = config.get('api_key', '')
-    masked_key = f"{current_key[:8]}...{current_key[-4:]}" if len(current_key) > 12 else current_key
-    api_key = input(f"Enter AnyRouter API Key [{masked_key}]: ").strip()
-    if api_key:
-        config['api_key'] = api_key
-    elif not current_key:
-        print("Warning: API Key is empty!")
     use_proxy_str = "y" if config.get('use_proxy', True) else "n"
     use_proxy = input(f"Use HTTP Proxy? (y/n) [{use_proxy_str}]: ").strip().lower()
     if use_proxy:
@@ -263,11 +253,8 @@ async def get_config(request: Request):
     if not _check_auth(request):
         raise HTTPException(status_code=401, detail="Not authenticated")
     safe_config = config.copy()
-    if len(safe_config.get('api_key', '')) > 10:
-        safe_config['api_key'] = safe_config['api_key'][:8] + "..." + safe_config['api_key'][-4:]
     safe_config.pop('dashboard_secret', None)
     safe_config.pop('dashboard_password', None)
-    safe_config.pop('api_auth_key', None)
     return safe_config
 
 @app.post("/config/reload")
@@ -294,19 +281,6 @@ async def health():
 @app.api_route("/v1/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"])
 async def proxy(path: str, request: Request):
     global SESSION
-    auth_key = config.get('api_auth_key', '')
-    if auth_key:
-        req_key = request.headers.get("x-api-key", "")
-        if not req_key:
-            bearer = request.headers.get("Authorization", "")
-            if bearer.startswith("Bearer "):
-                req_key = bearer[7:]
-        if not hmac.compare_digest(req_key.encode(), auth_key.encode()):
-            return Response(
-                content=json.dumps({"error": {"type": "authentication_error", "message": "invalid api key"}}),
-                status_code=401,
-                media_type="application/json",
-            )
     target_url = f"{config['target_base_url']}/{path}"
     if path == "messages":
         target_url += "?beta=true"
@@ -357,12 +331,14 @@ async def proxy(path: str, request: Request):
                 print(f"[PROXY] Body parse error: {e}")
     model_name = body_json.get('model', '')
     headers = get_claude_headers(is_stream=wants_stream, model=model_name, client_headers=dict(request.headers))
-    req_auth = request.headers.get("Authorization")
-    if config['api_key']:
-        headers["x-api-key"] = config['api_key']
-    elif req_auth:
-        api_key_from_auth = req_auth.replace("Bearer ", "")
-        headers["x-api-key"] = api_key_from_auth
+    # Pass through client's API key to upstream
+    req_api_key = request.headers.get("x-api-key", "")
+    if not req_api_key:
+        bearer = request.headers.get("Authorization", "")
+        if bearer.startswith("Bearer "):
+            req_api_key = bearer[7:]
+    if req_api_key:
+        headers["x-api-key"] = req_api_key
     if config['debug']:
         print(f"\n{'='*60}")
         print(f"[PROXY] Target: {target_url}")
@@ -447,19 +423,10 @@ async def proxy(path: str, request: Request):
 # --- Auth Helpers ---
 
 def _check_auth(request: Request):
-    """Check dashboard cookie OR api_auth_key (x-api-key / Bearer)."""
+    """Check dashboard cookie session."""
     token = request.cookies.get(COOKIE_NAME)
     if token and verify_session_token(token, config.get('dashboard_secret', '')):
         return True
-    auth_key = config.get('api_auth_key', '')
-    if auth_key:
-        req_key = request.headers.get("x-api-key", "")
-        if not req_key:
-            bearer = request.headers.get("Authorization", "")
-            if bearer.startswith("Bearer "):
-                req_key = bearer[7:]
-        if req_key and hmac.compare_digest(req_key.encode(), auth_key.encode()):
-            return True
     return False
 
 # --- Dashboard Routes ---
@@ -530,7 +497,7 @@ if __name__ == '__main__':
         config['host'] = args.host
     if args.port:
         config['port'] = args.port
-    needs_setup = args.setup or (not config_loaded) or (not config.get('api_key'))
+    needs_setup = args.setup or (not config_loaded)
     if needs_setup:
         if sys.stdin.isatty():
             setup_wizard()
