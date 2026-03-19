@@ -2,9 +2,9 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/anyrouter-opencode-bridge"
+CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/anyrouter-proxy"
 VENV_DIR="$CONFIG_DIR/venv"
-SERVICE_NAME="anyrouter-opencode-bridge"
+SERVICE_NAME="anyrouter-proxy"
 SERVICE_FILE="/etc/systemd/system/${SERVICE_NAME}.service"
 CURRENT_USER="$(whoami)"
 
@@ -48,7 +48,7 @@ sed \
   -e "s|__ROOT_DIR__|$ROOT_DIR|g" \
   -e "s|__VENV_DIR__|$VENV_DIR|g" \
   -e "s|__CONFIG_DIR__|$CONFIG_DIR|g" \
-  "$ROOT_DIR/linux/anyrouter-opencode-bridge.service" > "$TEMP_SERVICE"
+  "$ROOT_DIR/linux/anyrouter-proxy.service" > "$TEMP_SERVICE"
 
 sudo cp "$TEMP_SERVICE" "$SERVICE_FILE"
 rm -f "$TEMP_SERVICE"

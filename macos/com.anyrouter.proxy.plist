@@ -3,7 +3,7 @@
 <plist version="1.0">
   <dict>
     <key>Label</key>
-    <string>com.anyrouter.opencode.bridge</string>
+    <string>com.anyrouter.proxy</string>
     <key>ProgramArguments</key>
     <array>
       <string>__ROOT_DIR__/macos/run.sh</string>

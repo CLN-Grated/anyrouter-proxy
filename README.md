@@ -1,6 +1,6 @@
 # AnyRouter Proxy
 
-> Inspired by [dalia-abdallah25/anyrouter-opencode-bridge](https://github.com/dalia-abdallah25/anyrouter-opencode-bridge)
+> Inspired by [dalia-abdallah25/anyrouter-opencode-bridge](https://github.com/dalia-abdallah25/anyrouter-opencode-bridge) | [RebornQ/AnyRouter-Transparent-Proxy](https://github.com/RebornQ/AnyRouter-Transparent-Proxy)
 
 [中文文档](README_zh.md)
 
@@ -93,7 +93,7 @@ If you use the Anthropic official `claude-code` CLI, it has a hardcoded restrict
 ```bash
 ./macos/install.sh
 ./macos/status.sh
-tail -f ~/Library/Logs/anyrouter-opencode-bridge.log
+tail -f ~/Library/Logs/anyrouter-proxy.log
 ```
 To uninstall: `./macos/uninstall.sh`
 
@@ -102,7 +102,7 @@ To uninstall: `./macos/uninstall.sh`
 ```bash
 sudo ./linux/install.sh
 sudo ./linux/status.sh
-journalctl -u anyrouter-opencode-bridge -f
+journalctl -u anyrouter-proxy -f
 ```
 To uninstall: `sudo ./linux/uninstall.sh`
 

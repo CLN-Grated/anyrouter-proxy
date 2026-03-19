@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-PLIST_DEST="$HOME/Library/LaunchAgents/com.anyrouter.opencode.bridge.plist"
+PLIST_DEST="$HOME/Library/LaunchAgents/com.anyrouter.proxy.plist"
 
 if [[ -f "$PLIST_DEST" ]]; then
   launchctl unload "$PLIST_DEST" >/dev/null 2>&1 || true
@@ -11,4 +11,4 @@ else
   echo "LaunchAgent not found: $PLIST_DEST"
 fi
 
-echo "Note: config and venv remain in ~/.config/anyrouter-opencode-bridge"
+echo "Note: config and venv remain in ~/.config/anyrouter-proxy"

@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/anyrouter-opencode-bridge"
+CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/anyrouter-proxy"
 VENV_DIR="$CONFIG_DIR/venv"
 
 if [[ ! -d "$VENV_DIR" ]]; then
@@ -10,6 +10,6 @@ if [[ ! -d "$VENV_DIR" ]]; then
   exit 1
 fi
 
-export ANYROUTER_BRIDGE_CONFIG="$CONFIG_DIR/proxy_config.json"
+export ANYROUTER_PROXY_CONFIG="$CONFIG_DIR/proxy_config.json"
 
 exec "$VENV_DIR/bin/python" "$ROOT_DIR/main.py"

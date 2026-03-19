@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-SERVICE_NAME="anyrouter-opencode-bridge"
+SERVICE_NAME="anyrouter-proxy"
 
 echo "=== $SERVICE_NAME Status ==="
 systemctl status "$SERVICE_NAME" --no-pager 2>&1 || true

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-SERVICE_NAME="anyrouter-opencode-bridge"
+SERVICE_NAME="anyrouter-proxy"
 SERVICE_FILE="/etc/systemd/system/${SERVICE_NAME}.service"
 
 echo "Stopping service..."
@@ -18,4 +18,4 @@ fi
 
 echo ""
 echo "Uninstalled. Config and venv preserved at:"
-echo "  ${XDG_CONFIG_HOME:-$HOME/.config}/anyrouter-opencode-bridge/"
+echo "  ${XDG_CONFIG_HOME:-$HOME/.config}/anyrouter-proxy/"

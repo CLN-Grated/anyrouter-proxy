@@ -20,13 +20,13 @@ import model_tester
 from model_tester import MODELS, test_results, test_single_model, test_all_models
 
 def resolve_config_path():
-    env_path = os.environ.get("ANYROUTER_BRIDGE_CONFIG")
+    env_path = os.environ.get("ANYROUTER_PROXY_CONFIG")
     if env_path:
         return os.path.abspath(os.path.expanduser(env_path))
     xdg_config = os.environ.get("XDG_CONFIG_HOME")
     if not xdg_config:
         xdg_config = os.path.join(os.path.expanduser("~"), ".config")
-    return os.path.join(xdg_config, "anyrouter-opencode-bridge", "proxy_config.json")
+    return os.path.join(xdg_config, "anyrouter-proxy", "proxy_config.json")
 
 CONFIG_FILE = resolve_config_path()
 

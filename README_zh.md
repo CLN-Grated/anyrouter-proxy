@@ -93,7 +93,7 @@ python main.py
 ./macos/install.sh
 ./macos/status.sh
 # 查看日志
-tail -f ~/Library/Logs/anyrouter-opencode-bridge.log
+tail -f ~/Library/Logs/anyrouter-proxy.log
 ```
 如需卸载：`./macos/uninstall.sh`
 
@@ -104,7 +104,7 @@ tail -f ~/Library/Logs/anyrouter-opencode-bridge.log
 sudo ./linux/install.sh
 sudo ./linux/status.sh
 # 查看日志
-journalctl -u anyrouter-opencode-bridge -f
+journalctl -u anyrouter-proxy -f
 ```
 如需卸载：`sudo ./linux/uninstall.sh`
 

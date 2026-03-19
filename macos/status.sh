@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-LABEL="com.anyrouter.opencode.bridge"
+LABEL="com.anyrouter.proxy"
 
 if launchctl list | grep -q "$LABEL"; then
   echo "Running: $LABEL"
