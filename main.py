@@ -34,7 +34,7 @@ DEFAULT_CONFIG = {
     "proxy_url": "http://127.0.0.1:2080",
     "use_proxy": True,
     "debug": False,
-    "target_base_url": "https://anyrouter.top/v1",
+    "target_base_url": "https://anyrouter.top",
     "host": "127.0.0.1",
     "port": 8765,
     "dashboard_password": "",
@@ -60,6 +60,7 @@ _ANTHROPIC_BETA_FULL = ",".join([
     "context-management-2025-06-27",
     "prompt-caching-scope-2026-01-05",
     "effort-2025-11-24",
+    "context-1m-2025-08-07",
 ])
 _ANTHROPIC_BETA_BASIC = "interleaved-thinking-2025-05-14"
 
@@ -281,7 +282,11 @@ async def health():
 @app.api_route("/v1/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"])
 async def proxy(path: str, request: Request):
     global SESSION
-    target_url = f"{config['target_base_url']}/{path}"
+    # Normalize base URL: strip trailing /v1 if present, always prepend /v1
+    base = config['target_base_url'].rstrip('/')
+    if base.endswith('/v1'):
+        base = base[:-3]
+    target_url = f"{base}/v1/{path}"
     if path == "messages":
         target_url += "?beta=true"
     body = await request.body()
@@ -290,42 +295,44 @@ async def proxy(path: str, request: Request):
     if body:
         try:
             body_json = json.loads(body)
-            safe_keys = {
-                'model', 'messages', 'max_tokens', 'metadata', 'stop_sequences',
-                'stream', 'system', 'temperature', 'top_k', 'top_p',
-                'tools', 'tool_choice', 'thinking', 'service_tier',
-                'context_management', 'output_config',
-            }
-            filtered_body = {k: v for k, v in body_json.items() if k in safe_keys}
-            model = filtered_body.get('model', '')
+            # 透传客户端 body，仅做最小改写
+            model = body_json.get('model', '')
             if 'anyrouter/' in model:
-                filtered_body['model'] = model.replace('anyrouter/', '')
+                body_json['model'] = model.replace('anyrouter/', '')
+
             if config['debug']:
-                print(f"[PROXY] Original request keys: {list(body_json.keys())}")
-                print(f"[PROXY] Has tools: {'tools' in body_json}, tools count: {len(body_json.get('tools', []))}")
-                print(f"[PROXY] Has system: {'system' in body_json}")
-                print(f"[PROXY] Has thinking: {'thinking' in body_json}")
-            if ('sonnet' in model.lower() or 'opus' in model.lower() or 'haiku' in model.lower()) and CLAUDE_CODE_TOOLS:
-                filtered_body['tools'] = CLAUDE_CODE_TOOLS
-                if config['debug']:
-                    print(f"[PROXY] Injected {len(CLAUDE_CODE_TOOLS)} Claude Code tools")
+                print(f"[PROXY] Request keys: {list(body_json.keys())}")
+                print(f"[PROXY] Model: {model}, tools: {len(body_json.get('tools', []))}, "
+                      f"system: {'yes' if body_json.get('system') else 'no'}")
+
+            # 检测客户端类型：有 tools 或 system 的是富客户端（Xcode/Claude Code），直接透传
+            is_bare_client = not body_json.get('tools') and not body_json.get('system')
+            is_claude_model = any(k in model.lower() for k in ('sonnet', 'opus', 'haiku'))
+
+            if is_bare_client and is_claude_model and CLAUDE_CODE_TOOLS:
+                # 裸客户端（curl/OpenCode 等）：注入 Claude Code 伪装模板
+                body_json['tools'] = CLAUDE_CODE_TOOLS
                 if CLAUDE_CODE_SYSTEM:
-                    filtered_body['system'] = CLAUDE_CODE_SYSTEM
-                    if config['debug']:
-                        print(f"[PROXY] Injected Claude Code system prompt")
-                if 'sonnet' in model.lower() or 'opus' in model.lower():
-                    if 'thinking' not in filtered_body:
-                        filtered_body['thinking'] = {"type": "adaptive"}
-                        if config['debug']:
-                            print(f"[PROXY] Injected thinking config (adaptive)")
-                    if 'context_management' not in filtered_body:
-                        filtered_body['context_management'] = {"edits": [{"type": "clear_thinking_20251015", "keep": "all"}]}
-                    if 'output_config' not in filtered_body:
-                        filtered_body['output_config'] = {"effort": "medium"}
-                if 'metadata' not in filtered_body:
-                    filtered_body['metadata'] = {"user_id": _make_user_id()}
-            wants_stream = filtered_body.get('stream', False)
-            body_json = filtered_body
+                    body_json['system'] = CLAUDE_CODE_SYSTEM
+                if 'thinking' not in body_json:
+                    body_json['thinking'] = {"type": "adaptive"}
+                if 'context_management' not in body_json:
+                    body_json['context_management'] = {"edits": [{"type": "clear_thinking_20251015", "keep": "all"}]}
+                if 'output_config' not in body_json:
+                    body_json['output_config'] = {"effort": "medium"}
+                if config['debug']:
+                    print(f"[PROXY] Bare client detected, injected Claude Code camouflage")
+            else:
+                if config['debug']:
+                    print(f"[PROXY] Rich client detected, passthrough body as-is")
+
+            # 始终确保 metadata.user_id（伪装必需）
+            if 'metadata' not in body_json:
+                body_json['metadata'] = {"user_id": _make_user_id()}
+            elif 'user_id' not in body_json.get('metadata', {}):
+                body_json['metadata']['user_id'] = _make_user_id()
+
+            wants_stream = body_json.get('stream', False)
         except Exception as e:
             if config['debug']:
                 print(f"[PROXY] Body parse error: {e}")
