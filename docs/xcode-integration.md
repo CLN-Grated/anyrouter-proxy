@@ -1,174 +1,179 @@
-# Xcode Intelligence Integration Guide
+# Xcode Intelligence 集成指南
 
-> Use AnyRouter Proxy with a NewAPI gateway to configure custom Claude Agent and Codex Agent in Xcode 26.3.
+> 配置 Xcode 26.3 的 Claude Agent 使用 AnyRouter Proxy 作为自定义 API 端点。
 
-## Architecture
+## 概述
 
-```
-┌──────────────────────────────────────────────────────────┐
-│ Xcode 26.3                                               │
-│  ├── Claude Agent (Anthropic protocol, /v1/messages)     │
-│  └── Codex Agent  (OpenAI protocol, /v1/responses)       │
-└────────────┬───────────────────────────┬─────────────────┘
-             │                           │
-             ▼                           ▼
-┌──────────────────────────────────────────────────────────┐
-│ NewAPI Gateway (your-server:8003)                         │
-│ https://your-newapi-domain.example.com                    │
-│  ├── Claude channels (type=14) → AnyRouter Proxy         │
-│  └── Codex channels  (type=1)  → OpenAI-compatible API   │
-└────────────┬─────────────────────────────────────────────┘
-             │ Claude requests
-             ▼
-┌──────────────────────────────────────────────────────────┐
-│ AnyRouter Proxy (your-server:8765)                        │
-│  ├── Claude CLI fingerprint (headers + TLS)               │
-│  ├── anthropic-beta flags (incl. context-1m)              │
-│  ├── Bare client: inject Claude Code camouflage           │
-│  └── Rich client (Xcode): passthrough body as-is         │
-└────────────┬─────────────────────────────────────────────┘
-             │
-             ▼
-        AnyRouter Upstream (anyrouter.top)
-```
+AnyRouter Proxy 目前仅支持 Claude 模型（Anthropic 协议）。通过本指南，你可以将 Xcode 的 Claude Agent 连接到你自己部署的 AnyRouter Proxy 实例。
 
-## Prerequisites
+支持两种接入方式：
+- **直连模式**：Xcode → AnyRouter Proxy → AnyRouter 上游
+- **网关模式**：Xcode → NewAPI 等 API 网关 → AnyRouter Proxy → AnyRouter 上游
 
-- macOS 26.2+, Xcode 26.3+
-- A running AnyRouter Proxy instance (see main [README](../README.md))
-- A NewAPI gateway (e.g., [new-api](https://github.com/QuantumNous/new-api)) with Anthropic-type channels pointing to your AnyRouter Proxy
+## 架构
 
-## NewAPI Gateway Setup
-
-### Add Anthropic Channel
-
-1. Open your NewAPI admin panel
-2. Add a new channel:
-   - **Type**: Anthropic (type 14)
-   - **Base URL**: `https://your-anyrouter-proxy-domain.example.com` (your AnyRouter Proxy)
-   - **Key**: Your AnyRouter upstream API key
-   - **Models**: `claude-opus-4-6`, `claude-haiku-4-5-20251001`, etc.
-3. Create an API token for Xcode (no model limits, unlimited quota recommended)
-
-### Important: 1M Context Support
-
-The AnyRouter Proxy's `_ANTHROPIC_BETA_FULL` in `main.py` **must** include `context-1m-2025-08-07`. Without it, the upstream will reject requests with:
+### 直连模式（推荐）
 
 ```
-{"error":"1m context is available, please enable 1m context and retry"}
+┌──────────────────────────────────────────┐
+│ Xcode 26.3                               │
+│  └── Claude Agent (Anthropic /v1/messages)│
+└─────────────────┬────────────────────────┘
+                  │
+                  ▼
+┌──────────────────────────────────────────┐
+│ AnyRouter Proxy (your-server:8765)        │
+│  ├── Claude CLI 指纹伪装（headers + TLS） │
+│  ├── anthropic-beta 标志（含 context-1m） │
+│  ├── 裸客户端：注入 Claude Code 伪装      │
+│  └── 富客户端（Xcode）：透传 body         │
+└─────────────────┬────────────────────────┘
+                  │
+                  ▼
+           AnyRouter 上游
 ```
 
-This is already included in the latest version. If you see this error after upgrading, verify the beta flags list in `main.py`.
+### 网关模式（可选）
 
-## Xcode Client Configuration
+如果你已有 [NewAPI](https://github.com/QuantumNous/new-api) 等 API 网关，可以在中间加一层，实现令牌管理、用量统计等功能：
 
-### 1. Claude Agent
+```
+Xcode → NewAPI Gateway → AnyRouter Proxy → AnyRouter 上游
+```
 
-#### 1.1 Bypass built-in login
+网关配置要点：
+- 添加 Anthropic 类型通道（type=14），Base URL 指向你的 AnyRouter Proxy 地址
+- Key 填写你的 AnyRouter 上游 API Key
+- 创建 API 令牌给 Xcode 使用
 
-Xcode requires signing in with an Anthropic account. To use a custom endpoint, set a placeholder:
+## 前置条件
+
+- macOS 26.2+，Xcode 26.3+
+- 已部署的 AnyRouter Proxy 实例（参见 [部署文档](部署.md) 或主 [README](../README.md)）
+
+## Xcode Claude Agent 配置
+
+### 1. 绕过内置登录
+
+Xcode 默认要求使用 Anthropic 账号登录。设置一个占位值即可绕过：
 
 ```bash
 defaults write com.apple.dt.Xcode IDEChatClaudeAgentAPIKeyOverride ' '
 ```
 
-#### 1.2 Set preferred model
+### 2. 设置首选模型
 
 ```bash
 defaults write com.apple.dt.Xcode IDEChatClaudeAgentModelConfigurationAlias 'opus'
 ```
 
-#### 1.3 Create config file
+### 3. 创建配置文件
 
 ```bash
 mkdir -p ~/Library/Developer/Xcode/CodingAssistant/ClaudeAgentConfig
 ```
 
-Write `~/Library/Developer/Xcode/CodingAssistant/ClaudeAgentConfig/settings.json`:
+编辑 `~/Library/Developer/Xcode/CodingAssistant/ClaudeAgentConfig/settings.json`：
+
+#### 直连模式
 
 ```json
 {
   "model": "claude-opus-4-6",
   "env": {
-    "ANTHROPIC_AUTH_TOKEN": "<your-newapi-token>",
-    "ANTHROPIC_BASE_URL": "https://<your-newapi-domain>",
+    "ANTHROPIC_AUTH_TOKEN": "<your-anyrouter-api-key>",
+    "ANTHROPIC_BASE_URL": "https://<your-anyrouter-proxy-domain>",
     "ANTHROPIC_MODEL": "claude-opus-4-6"
   }
 }
 ```
 
-Replace `<your-newapi-token>` and `<your-newapi-domain>` with your actual values.
+- `ANTHROPIC_AUTH_TOKEN`：你的 AnyRouter 上游 API Key（Proxy 会透传到上游）
+- `ANTHROPIC_BASE_URL`：你部署的 AnyRouter Proxy 地址（不含 `/v1`）
 
-#### 1.4 Restart
+#### 网关模式
+
+```json
+{
+  "model": "claude-opus-4-6",
+  "env": {
+    "ANTHROPIC_AUTH_TOKEN": "<your-gateway-token>",
+    "ANTHROPIC_BASE_URL": "https://<your-gateway-domain>",
+    "ANTHROPIC_MODEL": "claude-opus-4-6"
+  }
+}
+```
+
+- `ANTHROPIC_AUTH_TOKEN`：API 网关上创建的令牌
+- `ANTHROPIC_BASE_URL`：API 网关地址
+
+### 4. 重启
 
 ```bash
 killall -9 ClaudeAgent 2>/dev/null
-# Fully quit Xcode (Cmd+Q) and reopen
+# 完全退出 Xcode（Cmd+Q）后重新打开
 ```
 
-### 2. Codex Agent
+## 代理对不同客户端的处理方式
 
-Codex config is at `~/Library/Developer/Xcode/CodingAssistant/codex/config.toml`.
+| 客户端类型 | 检测方式 | 行为 |
+|-----------|---------|------|
+| **Xcode Claude Agent** | 请求 body 包含 `tools` + `system` | 透传 body，仅伪装 HTTP 头 |
+| **Claude Code CLI** | 请求 body 包含 `tools` + `system` | 同上 |
+| **裸客户端**（curl 等） | 无 `tools` 或 `system` | 注入 Claude Code tools/system 等伪装模板 |
 
-Add or modify the provider section:
+所有情况下：
+- HTTP 头始终改写为 Claude CLI 指纹
+- `metadata.user_id` 始终确保存在
+- `?beta=true` 会附加到 `/v1/messages` 请求
 
-```toml
-model = "gpt-5.3-codex"
+## 1M 上下文支持
 
-[model_providers.OpenAI]
-name = "OpenAI"
-base_url = "https://<your-newapi-domain>/v1"
-env_key = "<your-newapi-token>"
-wire_api = "responses"
-requires_openai_auth = true
+AnyRouter Proxy 的 `_ANTHROPIC_BETA_FULL` 中已包含 `context-1m-2025-08-07`。如果上游返回类似以下错误：
+
+```
+{"error":"1m 上下文已经全量可用，请启用 1m 上下文后重试"}
 ```
 
-### 3. Custom Internet-Hosted Provider (Optional)
+请检查 `main.py` 中的 beta 标志列表是否包含该项。
 
-For basic chat completion (no agent features):
-
-1. **Xcode → Preferences → Intelligence → Add a Model Provider → Internet Hosted**
-2. **Endpoint**: `https://<your-newapi-domain>` (without `/v1/...`)
-3. **Header**: `Authorization` (instead of default `x-api-key`)
-4. **API Key**: Your NewAPI token
-
-> Note: Providers added this way do not support full agent features (MCP, tool calling, etc.).
-
-## How the Proxy Handles Different Clients
-
-| Client Type | Detection | Behavior |
-|-------------|-----------|----------|
-| **Xcode Claude Agent** | Has `tools` + `system` in request body | Passthrough body as-is; only headers are disguised |
-| **Claude Code CLI** | Has `tools` + `system` in request body | Same as above |
-| **Bare client** (curl, OpenCode, etc.) | No `tools` or `system` | Injects Claude Code tools, system prompt, thinking config as camouflage |
-
-In all cases:
-- HTTP headers are always rewritten to match Claude CLI fingerprint
-- `metadata.user_id` is always ensured
-- `?beta=true` is appended to `/v1/messages` requests
-
-## Verification
+## 验证
 
 ```bash
-curl -s -X POST "https://<your-newapi-domain>/v1/messages" \
-  -H "x-api-key: <your-token>" \
+# 健康检查
+curl -s https://<your-proxy-domain>/health
+
+# 发送测试请求
+curl -s -X POST "https://<your-proxy-domain>/v1/messages" \
+  -H "x-api-key: <your-anyrouter-api-key>" \
   -H "anthropic-version: 2023-06-01" \
   -H "content-type: application/json" \
   -d '{"model":"claude-opus-4-6","max_tokens":50,"messages":[{"role":"user","content":"Say hi"}]}'
 ```
 
-A successful response should include `cache_creation_input_tokens` > 0, confirming 1M context is active.
+成功响应中应包含 `cache_creation_input_tokens` > 0，表明 1M 上下文已激活。
 
-## Troubleshooting
+## 自定义互联网托管提供商（可选）
 
-| Error | Cause | Fix |
-|-------|-------|-----|
-| `1m context ... enable 1m context` | Missing `context-1m-2025-08-07` in beta flags | Add to `_ANTHROPIC_BETA_FULL` in `main.py`, restart |
-| Claude Agent says "I am Claude Code based on Sonnet 4.5" | Proxy overwrote client's system prompt | Update to latest proxy version (conditional injection) |
-| Xcode Claude Agent no response | API key override not set | Run `defaults write com.apple.dt.Xcode IDEChatClaudeAgentAPIKeyOverride ' '` |
-| `无可用账号` / No available account | Upstream channel key expired | Check/replace channel key in NewAPI |
+Xcode 还支持通过 Preferences → Intelligence 添加自定义提供商，但该方式不支持完整的 Agent 功能（MCP、工具调用等）：
 
-## References
+1. **Xcode → Preferences → Intelligence → Add a Model Provider → Internet Hosted**
+2. **Endpoint**：`https://<your-proxy-domain>`（不含 `/v1/...`）
+3. **Header**：`Authorization`（替代默认的 `x-api-key`）
+4. **API Key**：你的 API Key
+
+> 注意：此方式添加的提供商不支持完整 Agent 功能。
+
+## 常见问题
+
+| 错误 | 原因 | 解决方案 |
+|-----|------|---------|
+| `1m context ... enable 1m context` | beta 标志缺少 `context-1m-2025-08-07` | 在 `main.py` 的 `_ANTHROPIC_BETA_FULL` 中添加，重启 |
+| Claude Agent 回复"我是基于 Sonnet 4.5 的 Claude Code" | 代理覆盖了客户端的 system prompt | 更新到最新版（条件注入逻辑） |
+| Xcode Claude Agent 无响应 | 未设置 API key override | 执行 `defaults write` 命令绕过内置登录 |
+| `无可用账号` | 上游通道 key 失效 | 检查/更换 API Key |
+
+## 参考
 
 - [Xcode Claude Code integration with third-party APIs (Gist)](https://gist.github.com/zoltan-magyar/be846eb36cf5ee33c882ef5f932b754b)
 - [Use Custom Models in Xcode 26 Intelligence](https://wendyliga.com/blog/xcode-26-custom-model/)
