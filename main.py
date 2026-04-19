@@ -35,6 +35,7 @@ DEFAULT_CONFIG = {
     "use_proxy": True,
     "debug": False,
     "target_base_url": "https://anyrouter.top",
+    "max_tokens": "",
     "host": "127.0.0.1",
     "port": 8765,
     "dashboard_password": "",
@@ -43,6 +44,7 @@ DEFAULT_CONFIG = {
 
 config = {}
 SESSION = None
+SESSION_HTTP_VERSION = None
 CLAUDE_CODE_TOOLS = []
 CLAUDE_CODE_SYSTEM = []
 
@@ -101,17 +103,50 @@ def load_config():
                 loaded_config = json.load(f)
             config = DEFAULT_CONFIG.copy()
             config.update(loaded_config)
+            _normalize_config()
             print(f"[SYSTEM] Configuration loaded from {CONFIG_FILE}")
             return True
         except Exception as e:
             print(f"[SYSTEM] Error loading config: {e}")
             config = DEFAULT_CONFIG.copy()
+            _normalize_config()
             return False
     else:
         config = DEFAULT_CONFIG.copy()
+        _normalize_config()
         return False
 
+def _normalize_config():
+    value = config.get("max_tokens", "")
+    if value is None:
+        config["max_tokens"] = ""
+        return
+    if isinstance(value, bool):
+        config["max_tokens"] = ""
+        return
+    if isinstance(value, int):
+        config["max_tokens"] = value if value > 0 else ""
+        return
+    if isinstance(value, str):
+        value = value.strip()
+        if not value:
+            config["max_tokens"] = ""
+            return
+        try:
+            parsed = int(value)
+        except ValueError:
+            config["max_tokens"] = ""
+            return
+        config["max_tokens"] = parsed if parsed > 0 else ""
+        return
+    config["max_tokens"] = ""
+
+def _get_config_max_tokens():
+    value = config.get("max_tokens", "")
+    return value if isinstance(value, int) and value > 0 else None
+
 def save_config():
+    _normalize_config()
     try:
         os.makedirs(os.path.dirname(CONFIG_FILE), exist_ok=True)
         with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
@@ -138,6 +173,12 @@ def setup_wizard():
     debug_mode = input(f"Enable Debug Mode? (y/n) [{debug_str}]: ").strip().lower()
     if debug_mode:
         config['debug'] = (debug_mode == 'y')
+    current_max_tokens = config.get('max_tokens', '')
+    max_tokens = input(
+        f"Override upstream max_tokens (blank = keep client value) [{current_max_tokens}]: "
+    ).strip()
+    if max_tokens or current_max_tokens:
+        config['max_tokens'] = max_tokens
     save_config()
     print("\n" + "="*60)
     print("Setup complete!")
@@ -187,7 +228,14 @@ def get_claude_headers(is_stream=False, model="", client_headers=None):
 
     return headers
 
-def create_session():
+def _format_http_version(http_version):
+    if http_version == "v1":
+        return "HTTP/1.1"
+    if http_version == "v2":
+        return "HTTP/2"
+    return "default"
+
+def create_session(http_version=None):
     """Create curl_cffi session with Chrome TLS fingerprint."""
     proxies = None
     if config['use_proxy']:
@@ -196,18 +244,41 @@ def create_session():
             "https": config['proxy_url'],
         }
     if config['debug']:
-        print(f"[SYSTEM] Creating curl_cffi session (impersonate=chrome, proxy={config['proxy_url'] if config['use_proxy'] else 'None'})")
+        print(
+            f"[SYSTEM] Creating curl_cffi session "
+            f"(impersonate=chrome, http_version={_format_http_version(http_version)}, "
+            f"proxy={config['proxy_url'] if config['use_proxy'] else 'None'})"
+        )
     return cf_requests.Session(
         impersonate="chrome",
+        http_version=http_version,
         proxies=proxies,
         verify=False,
         timeout=600,
     )
 
+def reset_session(http_version=None):
+    global SESSION, SESSION_HTTP_VERSION
+    if SESSION:
+        SESSION.close()
+    SESSION_HTTP_VERSION = http_version
+    SESSION = create_session(http_version=http_version)
+    return SESSION
+
+def _is_http2_settings_error(exc):
+    message = str(exc).lower()
+    return "curl: (16)" in message and "settings frame" in message
+
+def downgrade_session_to_http1(exc):
+    if SESSION_HTTP_VERSION == "v1" or not _is_http2_settings_error(exc):
+        return False
+    print("[SYSTEM] HTTP/2 handshake failed, retrying with HTTP/1.1")
+    reset_session(http_version="v1")
+    return True
+
 @app.on_event("startup")
 async def startup():
-    global SESSION
-    SESSION = create_session()
+    reset_session()
     if not config.get('dashboard_secret'):
         config['dashboard_secret'] = secrets.token_hex(32)
         save_config()
@@ -262,11 +333,8 @@ async def get_config(request: Request):
 async def reload_config(request: Request):
     if not _check_auth(request):
         raise HTTPException(status_code=401, detail="Not authenticated")
-    global SESSION
     load_config()
-    if SESSION:
-        SESSION.close()
-    SESSION = create_session()
+    reset_session()
     return {"status": "ok", "message": "Configuration reloaded"}
 
 @app.get("/health")
@@ -332,6 +400,16 @@ async def proxy(path: str, request: Request):
             elif 'user_id' not in body_json.get('metadata', {}):
                 body_json['metadata']['user_id'] = _make_user_id()
 
+            config_max_tokens = _get_config_max_tokens()
+            if path == "messages" and config_max_tokens is not None:
+                original_max_tokens = body_json.get("max_tokens")
+                body_json["max_tokens"] = config_max_tokens
+                if config['debug']:
+                    print(
+                        f"[PROXY] Patched upstream max_tokens: "
+                        f"{original_max_tokens!r} -> {config_max_tokens}"
+                    )
+
             wants_stream = body_json.get('stream', False)
         except Exception as e:
             if config['debug']:
@@ -346,12 +424,14 @@ async def proxy(path: str, request: Request):
             req_api_key = bearer[7:]
     if req_api_key:
         headers["x-api-key"] = req_api_key
+        if path == "models":
+            headers["Authorization"] = f"Bearer {req_api_key}"
     if config['debug']:
         print(f"\n{'='*60}")
         print(f"[PROXY] Target: {target_url}")
         print(f"[PROXY] Model: {body_json.get('model', 'N/A')}")
         print(f"[PROXY] Stream: {wants_stream}")
-        print(f"[PROXY] TLS: curl_cffi/chrome")
+        print(f"[PROXY] TLS: curl_cffi/chrome ({_format_http_version(SESSION_HTTP_VERSION)})")
     max_attempts = 5
     retry_delay = 1
     for attempt in range(max_attempts):
@@ -382,7 +462,7 @@ async def proxy(path: str, request: Request):
                         if mt in ("end", "error"):
                             break
                     if attempt < max_attempts - 1:
-                        SESSION = create_session()
+                        reset_session(http_version=SESSION_HTTP_VERSION)
                         await asyncio.sleep(retry_delay)
                         continue
                     return Response(content=b'{"error":{"message":"Network error after max retries"}}', status_code=502, media_type="application/json")
@@ -411,7 +491,7 @@ async def proxy(path: str, request: Request):
                     print(f"[PROXY] Status: {resp.status_code}")
                 if resp.status_code in [520, 502]:
                     if attempt < max_attempts - 1:
-                        SESSION = create_session()
+                        reset_session(http_version=SESSION_HTTP_VERSION)
                         await asyncio.sleep(retry_delay)
                         continue
                     return Response(content=b'{"error":{"message":"Network error after max retries"}}', status_code=502, media_type="application/json")
@@ -423,7 +503,8 @@ async def proxy(path: str, request: Request):
                 print(f"[PROXY] Error: {type(e).__name__}: {e}")
                 traceback.print_exc()
             if attempt < max_attempts - 1:
-                SESSION = create_session()
+                if not downgrade_session_to_http1(e):
+                    reset_session(http_version=SESSION_HTTP_VERSION)
             else:
                 return Response(content=json.dumps({"error": {"message": str(e)}}), status_code=500)
 
@@ -521,6 +602,7 @@ if __name__ == '__main__':
     print(f"Target:    {config['target_base_url']}")
     print(f"Proxy:     {config['proxy_url'] if config['use_proxy'] else 'Disabled'}")
     print(f"Debug:     {'Enabled' if config['debug'] else 'Disabled'}")
+    print(f"MaxTokens: {config['max_tokens'] or 'Passthrough'}")
     print(f"Tools:     {len(CLAUDE_CODE_TOOLS)} Claude Code tools loaded")
     print(f"TLS:       curl_cffi impersonate=chrome (Chrome JA3/JA4/H2)")
     print(f"Headers:   claude-cli/{_CLI_VERSION} (Node.js SDK {_SDK_PACKAGE_VERSION})")

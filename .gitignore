@@ -1,5 +1,8 @@
 # User config
 proxy_config.json
+.python-version
+.env.local
+.env.*.local
 
 # Python
 __pycache__/
@@ -8,6 +11,14 @@ __pycache__/
 venv/
 .venv/
 .env
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+build/
+dist/
 
 # Secrets & Keys
 *.pem
@@ -26,9 +37,12 @@ node_modules/
 
 # Logs & Cache
 *.log
+*.pid
+*.pid.lock
 logs/
 .cache/
 cache/
+nohup.out
 
 # Debug/capture files
 capture_claude_code.py
@@ -36,3 +50,9 @@ captured_requests.json
 request_body_*.json
 test_models.py
 main_v22_full.py
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

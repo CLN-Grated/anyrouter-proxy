@@ -59,6 +59,7 @@ cp proxy_config.example.json proxy_config.json
 - `port`: The port the proxy and dashboard will run on. Default is **8765**.
 - `dashboard_password`: The password required to access the Web Dashboard. Make sure to set a secure password.
 - `target_base_url`: Upstream API URL. Default is `https://anyrouter.top/v1`.
+- `max_tokens`: Optional override for the `max_tokens` sent to upstream `/v1/messages`. Leave it empty to preserve the client value.
 
 **Authentication Model:**
 This proxy uses a **transparent passthrough** model for API authentication. The proxy does **not** store or validate API keys itself. Instead, clients must include their own upstream API key in each request (via `x-api-key` header or `Authorization: Bearer` token), and the proxy forwards it directly to the upstream service.

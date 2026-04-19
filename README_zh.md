@@ -57,6 +57,7 @@ cp proxy_config.example.json proxy_config.json
 - `port`: 代理 API 服务和 Dashboard 控制台的运行端口。默认端口为 **8765**。
 - `dashboard_password`: 访问 Web Dashboard 控制台的登录密码。请务必设置一个安全的密码。
 - `target_base_url`: 上游 API 目标地址。默认为 `https://anyrouter.top/v1`。
+- `max_tokens`: 可选。用于覆盖发送到上游 `/v1/messages` 的 `max_tokens`。留空则保持客户端原值不变。
 
 **认证模型说明：**
 本代理采用 **透明透传** 认证模型。代理本身不存储或校验 API 密钥，客户端需在每次请求中自行携带上游 API 密钥（通过 `x-api-key` 请求头或 `Authorization: Bearer` Token），代理会将其直接转发至上游服务。
