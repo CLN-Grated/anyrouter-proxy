@@ -2,6 +2,7 @@
     "proxy_url": "http://127.0.0.1:2080",
     "use_proxy": true,
     "debug": false,
+    "buffer_stream": true,
     "target_base_url": "https://anyrouter.top/v1",
     "max_tokens": "",
     "host": "127.0.0.1",

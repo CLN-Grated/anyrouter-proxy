@@ -2,6 +2,7 @@ import json
 import hashlib
 import sys
 import os
+import codecs
 import secrets
 import uuid
 import traceback
@@ -34,6 +35,7 @@ DEFAULT_CONFIG = {
     "proxy_url": "http://127.0.0.1:2080",
     "use_proxy": True,
     "debug": False,
+    "buffer_stream": False,
     "target_base_url": "https://anyrouter.top",
     "max_tokens": "",
     "host": "127.0.0.1",
@@ -117,6 +119,11 @@ def load_config():
         return False
 
 def _normalize_config():
+    buffer_stream = config.get("buffer_stream", False)
+    if isinstance(buffer_stream, str):
+        config["buffer_stream"] = buffer_stream.strip().lower() in ("1", "true", "yes", "on", "y")
+    else:
+        config["buffer_stream"] = bool(buffer_stream)
     value = config.get("max_tokens", "")
     if value is None:
         config["max_tokens"] = ""
@@ -173,6 +180,12 @@ def setup_wizard():
     debug_mode = input(f"Enable Debug Mode? (y/n) [{debug_str}]: ").strip().lower()
     if debug_mode:
         config['debug'] = (debug_mode == 'y')
+    buffer_stream_str = "y" if config.get('buffer_stream', False) else "n"
+    buffer_stream = input(
+        f"Enable upstream stream buffering for non-stream requests? (y/n) [{buffer_stream_str}]: "
+    ).strip().lower()
+    if buffer_stream:
+        config['buffer_stream'] = (buffer_stream == 'y')
     current_max_tokens = config.get('max_tokens', '')
     max_tokens = input(
         f"Override upstream max_tokens (blank = keep client value) [{current_max_tokens}]: "
@@ -307,6 +320,130 @@ def _stream_worker(session, method, url, headers, json_data, q):
     except Exception as e:
         q.put(("error", e))
 
+def _read_stream_bytes(resp):
+    chunks = []
+    for chunk in resp.iter_content():
+        chunks.append(chunk if isinstance(chunk, bytes) else chunk.encode())
+    return b"".join(chunks)
+
+def _iter_sse_events(resp):
+    buffer = ""
+    decoder = codecs.getincrementaldecoder("utf-8")()
+
+    def iter_buffered_events():
+        nonlocal buffer
+        buffer = buffer.replace("\r\n", "\n")
+        while "\n\n" in buffer:
+            event_str, buffer = buffer.split("\n\n", 1)
+            event_str = event_str.strip()
+            if not event_str:
+                continue
+            event_type = None
+            data_lines = []
+            for line in event_str.splitlines():
+                if line.startswith("event:"):
+                    event_type = line[6:].strip()
+                elif line.startswith("data:"):
+                    data_lines.append(line[5:].lstrip())
+            if not data_lines:
+                continue
+            data = "\n".join(data_lines).strip()
+            if not data or data == "[DONE]":
+                continue
+            yield event_type, json.loads(data)
+
+    for chunk in resp.iter_content():
+        if isinstance(chunk, bytes):
+            chunk = decoder.decode(chunk)
+        buffer += chunk
+        yield from iter_buffered_events()
+    buffer += decoder.decode(b"", final=True)
+    yield from iter_buffered_events()
+
+def _build_buffered_message_response(events):
+    message = None
+    usage = {}
+    content_blocks = []
+
+    def ensure_block(index):
+        while len(content_blocks) <= index:
+            content_blocks.append(None)
+        if content_blocks[index] is None:
+            content_blocks[index] = {}
+        return content_blocks[index]
+
+    for event_type, payload in events:
+        event_name = event_type or payload.get("type")
+        if event_name == "message_start":
+            message = dict(payload.get("message", {}))
+            usage = dict(message.get("usage", {})) if isinstance(message.get("usage"), dict) else {}
+            message["content"] = []
+        elif event_name == "content_block_start":
+            index = payload.get("index", 0)
+            content_blocks.extend([None] * max(0, index - len(content_blocks) + 1))
+            content_blocks[index] = dict(payload.get("content_block", {}))
+        elif event_name == "content_block_delta":
+            index = payload.get("index", 0)
+            delta = payload.get("delta", {})
+            block = ensure_block(index)
+            delta_type = delta.get("type")
+            if delta_type == "text_delta":
+                block["type"] = "text"
+                block["text"] = block.get("text", "") + delta.get("text", "")
+            elif delta_type == "thinking_delta":
+                block["type"] = block.get("type", "thinking")
+                block["thinking"] = block.get("thinking", "") + delta.get("thinking", "")
+            elif delta_type == "signature_delta":
+                block["signature"] = delta.get("signature")
+            elif delta_type == "input_json_delta":
+                block["type"] = block.get("type", "tool_use")
+                block["_partial_input_json"] = block.get("_partial_input_json", "") + delta.get("partial_json", "")
+        elif event_name == "message_delta":
+            if message is None:
+                message = {"type": "message", "content": []}
+            delta = payload.get("delta", {})
+            for key in ("stop_reason", "stop_sequence"):
+                if key in delta:
+                    message[key] = delta[key]
+            if isinstance(payload.get("usage"), dict):
+                usage.update(payload["usage"])
+        elif event_name == "error":
+            raise ValueError(payload.get("error", {}).get("message") or str(payload))
+
+    if message is None:
+        raise ValueError("Buffered stream ended without message_start event")
+
+    finalized_blocks = []
+    for block in content_blocks:
+        if not block:
+            continue
+        partial_input = block.pop("_partial_input_json", None)
+        if partial_input is not None:
+            try:
+                block["input"] = json.loads(partial_input)
+            except json.JSONDecodeError:
+                block["input"] = partial_input
+        finalized_blocks.append(block)
+
+    message["content"] = finalized_blocks
+    if usage:
+        message["usage"] = usage
+    return message
+
+def _buffered_stream_request(session, method, url, headers, json_data):
+    resp = session.request(
+        method=method, url=url, headers=headers, json=json_data,
+        stream=True, timeout=600,
+    )
+    status_code = resp.status_code
+    content_type = resp.headers.get("content-type", "")
+    if status_code >= 400:
+        return status_code, _read_stream_bytes(resp)
+    if "text/event-stream" not in content_type.lower():
+        return status_code, _read_stream_bytes(resp)
+    buffered_message = _build_buffered_message_response(_iter_sse_events(resp))
+    return status_code, json.dumps(buffered_message).encode("utf-8")
+
 async def _async_chunks(q):
     """Async generator reading chunks from thread-safe queue."""
     loop = asyncio.get_running_loop()
@@ -359,7 +496,9 @@ async def proxy(path: str, request: Request):
         target_url += "?beta=true"
     body = await request.body()
     body_json = {}
-    wants_stream = False
+    client_wants_stream = False
+    upstream_wants_stream = False
+    buffer_stream_response = False
     if body:
         try:
             body_json = json.loads(body)
@@ -410,12 +549,26 @@ async def proxy(path: str, request: Request):
                         f"{original_max_tokens!r} -> {config_max_tokens}"
                     )
 
-            wants_stream = body_json.get('stream', False)
+            client_wants_stream = body_json.get('stream', False)
+            buffer_stream_response = (
+                path == "messages"
+                and config.get("buffer_stream", False)
+                and not client_wants_stream
+            )
+            upstream_wants_stream = client_wants_stream or buffer_stream_response
+            if buffer_stream_response:
+                body_json["stream"] = True
+                if config['debug']:
+                    print("[PROXY] Buffer stream enabled for downstream non-stream request")
         except Exception as e:
             if config['debug']:
                 print(f"[PROXY] Body parse error: {e}")
     model_name = body_json.get('model', '')
-    headers = get_claude_headers(is_stream=wants_stream, model=model_name, client_headers=dict(request.headers))
+    headers = get_claude_headers(
+        is_stream=upstream_wants_stream,
+        model=model_name,
+        client_headers=dict(request.headers),
+    )
     # Pass through client's API key to upstream
     req_api_key = request.headers.get("x-api-key", "")
     if not req_api_key:
@@ -430,7 +583,9 @@ async def proxy(path: str, request: Request):
         print(f"\n{'='*60}")
         print(f"[PROXY] Target: {target_url}")
         print(f"[PROXY] Model: {body_json.get('model', 'N/A')}")
-        print(f"[PROXY] Stream: {wants_stream}")
+        print(f"[PROXY] Client stream: {client_wants_stream}")
+        print(f"[PROXY] Upstream stream: {upstream_wants_stream}")
+        print(f"[PROXY] Buffer stream: {buffer_stream_response}")
         print(f"[PROXY] TLS: curl_cffi/chrome ({_format_http_version(SESSION_HTTP_VERSION)})")
     max_attempts = 5
     retry_delay = 1
@@ -440,7 +595,7 @@ async def proxy(path: str, request: Request):
                 print(f"[PROXY] Attempt {attempt + 1}/{max_attempts}...")
                 sys.stdout.flush()
 
-            if wants_stream:
+            if client_wants_stream:
                 q = thread_queue.Queue(maxsize=256)
                 t = threading.Thread(
                     target=_stream_worker,
@@ -482,6 +637,26 @@ async def proxy(path: str, request: Request):
                     _async_chunks(q), status_code=status_code, media_type="text/event-stream",
                     headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
                 )
+            elif buffer_stream_response:
+                status_code, buffered_content = await asyncio.to_thread(
+                    _buffered_stream_request,
+                    SESSION,
+                    request.method,
+                    target_url,
+                    headers,
+                    body_json,
+                )
+                if config['debug']:
+                    print(f"[PROXY] Status: {status_code}")
+                if status_code in [520, 502]:
+                    if attempt < max_attempts - 1:
+                        reset_session(http_version=SESSION_HTTP_VERSION)
+                        await asyncio.sleep(retry_delay)
+                        continue
+                    return Response(content=b'{"error":{"message":"Network error after max retries"}}', status_code=502, media_type="application/json")
+                if status_code in [403, 500]:
+                    return Response(content=buffered_content, status_code=status_code, media_type="application/json")
+                return Response(content=buffered_content, status_code=status_code, media_type="application/json")
             else:
                 resp = await asyncio.to_thread(
                     SESSION.request, request.method, target_url,
@@ -602,6 +777,7 @@ if __name__ == '__main__':
     print(f"Target:    {config['target_base_url']}")
     print(f"Proxy:     {config['proxy_url'] if config['use_proxy'] else 'Disabled'}")
     print(f"Debug:     {'Enabled' if config['debug'] else 'Disabled'}")
+    print(f"BufStream: {'Enabled' if config['buffer_stream'] else 'Disabled'}")
     print(f"MaxTokens: {config['max_tokens'] or 'Passthrough'}")
     print(f"Tools:     {len(CLAUDE_CODE_TOOLS)} Claude Code tools loaded")
     print(f"TLS:       curl_cffi impersonate=chrome (Chrome JA3/JA4/H2)")

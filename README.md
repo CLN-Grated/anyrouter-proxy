@@ -59,6 +59,7 @@ cp proxy_config.example.json proxy_config.json
 - `port`: The port the proxy and dashboard will run on. Default is **8765**.
 - `dashboard_password`: The password required to access the Web Dashboard. Make sure to set a secure password.
 - `target_base_url`: Upstream API URL. Default is `https://anyrouter.top/v1`.
+- `buffer_stream`: When `true`, if a downstream `/v1/messages` request is not `stream: true` (including omitted or `false`), the proxy will force streaming upstream, buffer the SSE events, and return a standard non-stream JSON response after completion.
 - `max_tokens`: Optional override for the `max_tokens` sent to upstream `/v1/messages`. Leave it empty to preserve the client value.
 
 **Authentication Model:**
